@@ -430,10 +430,37 @@ class MyPlugin(Star):
     
     @bilitool.command("help", alias={'帮助', 'helpme'})
     async def help(self, event: AstrMessageEvent):
-        """帮助指令"""
+        """帮助指令（新增青龙环境变量配置项展示）"""
         # 获取当前账号数量
         token = self.get_qinglong_token()
         count, _ = self.count_bili_envs(token) if token else (0, [])
+        
+        # 获取青龙面板中的B站任务配置（新增逻辑）
+        config_info = "暂无配置信息（青龙面板连接失败）"
+        if token:
+            all_envs = self.get_all_envs(token)
+            if all_envs:
+                # 定义需要展示的配置项映射
+                config_mapping = {
+                    "Ray_DailyTaskConfig__NumberOfProtectedCoins": "哔哩哔哩最少保留的硬币数量",
+                    "DailyTaskConfig__SaveCoinsWhenLv6": "哔哩哔哩在lv6之后不对视频投币",
+                    "DailyTaskConfig__IsShareVideo": "哔哩哔哩分享视频（不实际分享给任何人）",
+                    "DailyTaskConfig__SelectLike": "哔哩哔哩点赞（可能会增加推荐关联性）"
+                }
+                # 遍历获取配置项当前值
+                config_lines = []
+                for env_name, desc in config_mapping.items():
+                    # 查找对应环境变量
+                    env_value = "未配置"
+                    for env in all_envs:
+                        current_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
+                        if current_name == env_name:
+                            env_value = env.get("value", "未配置")
+                            break
+                    config_lines.append(f"• {desc}：{env_value}")
+                config_info = "\n".join(config_lines)
+            else:
+                config_info = "暂无配置信息（未查询到青龙面板环境变量）"
         
         help_msg = f"""BiliTool 帮助：
 风险声明：此工具不能保证安全性，所有者可直接查看ck，可直接控制账号！
@@ -443,6 +470,8 @@ class MyPlugin(Star):
 如果不想扫码登出，可以直接将uid告诉所有者让其删除
 
 当前存储的账号数量：{count}/{self.max_account}
+
+{config_info}
 
 指令列表：
 登录 /bilitool login <uid>  # 登录账号，扫码验证
@@ -454,7 +483,7 @@ class MyPlugin(Star):
 所有者指令：
 删除账户 /bilitool forcelogout <uid>  
 直接添加ck /bilitool addck <ck> <uid>
-"""
+    """
         yield event.plain_result(help_msg)
 
     @bilitool.command("login", alias={'登录'})
