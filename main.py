@@ -428,6 +428,23 @@ class MyPlugin(Star):
     def bilitool(self):
         pass
     
+    @bilitool.command("info", alias={'介绍'})
+    async def info(self, event: AstrMessageEvent):
+        info_msg="""此插件可以每天增加最多65经验，可以快速升级lv6
+
+目前唯一缺陷是自动看视频会增加一些浏览记录，在天选任务会增加一些关注，不会影响账号其它东西
+（天选关注任务可以关闭掉，具体由机器人所有者填写）
+
+功能任务说明可查看：
+https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-功能任务说明
+
+此工具使用的项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目
+
+当前存储的账号数量：{count}/{self.max_account}
+{config_info}
+        """
+        yield event.plain_result(info_msg)
+        
     @bilitool.command("help", alias={'帮助', 'helpme'})
     async def help(self, event: AstrMessageEvent):
         """帮助指令（新增青龙环境变量配置项展示）"""
@@ -462,28 +479,31 @@ class MyPlugin(Star):
             else:
                 config_info = "暂无配置信息（未查询到青龙面板环境变量）"
         
-        help_msg = f"""BiliTool 帮助：
-风险声明：此工具不能保证安全性，所有者可直接查看ck，可直接控制账号！
-此工具使用的项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目
+        help_msg = f"""风险声明：此工具不能保证安全性，所有者可直接查看ck，可直接控制账号！
+（其实我还没有开源这个插件，只要没同类型的BOT目前很安全）
+此工具引用的开源项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目，此项目在面板即可本地登录，只需要一个能长期开机的电脑/NAS即可
 
-为了保证安全性，此账户在登录和登出都需要扫码验证，以防止任何人都可以删除你的ck
+目前为了保证安全性，此账户在登录和登出都需要扫码验证，以防止任何人都可以删除你的ck
 如果不想扫码登出，可以直接将uid告诉所有者让其删除
 
 当前存储的账号数量：{count}/{self.max_account}
-
 {config_info}
 
-指令列表：
-登录 /bilitool login <uid>  # 登录账号，扫码验证
-注：登录会申请一个登录二维码，扫码后请在手机端确认登录，如果提示请选择在自己设备登录
+注意：尖括号内的值<var>等只需要填写数字
+例如 /bilitool login 1057790493
 
-登出 /bilitool logout <uid>       # 删除账号，扫码验证
-注：登出会申请一个登录二维码，此次请求仅验证您的身份，如果需要直接删除请联系所有者
+BiliTool 帮助：
+
+ 指令列表：
+ 登录Bili账号 /bilitool login <uid> 
+ - 登录会申请一个登录二维码，扫码后请在手机端确认登录，如果提示地点请选择在自己设备登录
+ 登出Bili账号 /bilitool logout <uid> 
+ - 登出会申请一个登录二维码，此次请求仅验证您的身份，如果需要直接删除请联系所有者
 
 所有者指令：
-删除账户 /bilitool forcelogout <uid>  
-直接添加ck /bilitool addck <ck> <uid>
-    """
+ 删除账户 /bilitool forcelogout <uid>  
+ 直接添加ck /bilitool addck <ck> <uid>
+"""
         yield event.plain_result(help_msg)
 
     @bilitool.command("login", alias={'登录'})
