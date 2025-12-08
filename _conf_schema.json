@@ -1,0 +1,46 @@
+{
+  "slot_config": {
+    "description": "主要配置",
+    "type": "object",
+    "hint": "配置应用选项",
+    "items": {
+      "maxaccount": {
+        "description": "最大登录的账户个数",
+        "type": "int",
+        "hint": "太大可能导致IP风控",
+        "obvious_hint": true,
+        "default": 10
+      },
+      "test": {
+        "description": "测试模式(不生成二维码)",
+        "type": "bool",
+        "hint": "开启后不会生成二维码，方便调试",
+        "default": false,
+        "invisible": false
+      }
+    }
+  },
+  "ql_config": {
+    "description": "青龙面板配置",
+    "type": "object",
+    "hint": "配置青龙的地址和应用账户，请在青龙面板的'系统设置-应用设置-创建应用(右上角)'创建应用，需要勾选'环境变量'权限",
+    "items": {
+      "ql_panel_url": {
+        "description": "青龙面板地址",
+        "type": "string",
+        "hint": "填写面板的IP地址和端口",
+        "default": "http://127.0.0.1:5700"
+      },
+      "ql_client_id": {
+        "description": "青龙应用ID",
+        "type": "string",
+        "hint": "填写应用ID"
+      },
+      "ql_client_secret": {
+        "description": "青龙应用密钥",
+        "type": "string",
+        "hint": "填写应用密钥"
+      }
+    }
+  }
+}
