@@ -459,8 +459,7 @@ class MyPlugin(Star):
                 config_info = "暂无配置信息（未查询到青龙面板环境变量）"
         info_msg=f"""此插件可以每天增加最多65经验，可以快速升级lv6
 
-目前唯一缺陷是自动看视频会增加一些浏览记录，在天选任务会增加一些关注，不会影响账号其它东西
-（天选关注任务可以关闭掉，具体由机器人所有者填写）
+目前唯一缺陷是自动看视频会增加一些浏览记录或者点赞，不会影响账号其它东西，具体配置由机器人所有者填写
 
 功能任务说明可查看：
 https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-功能任务说明
@@ -485,12 +484,7 @@ https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-功能任务�
             all_envs = self.get_all_envs(token)
             if all_envs:
                 # 定义需要展示的配置项映射
-                config_mapping = {
-                    "Ray_DailyTaskConfig__NumberOfProtectedCoins": "哔哩哔哩最少保留的硬币数量",
-                    "DailyTaskConfig__SaveCoinsWhenLv6": "哔哩哔哩在lv6之后不对视频投币",
-                    "DailyTaskConfig__IsShareVideo": "哔哩哔哩分享视频（不实际分享给任何人）",
-                    "DailyTaskConfig__SelectLike": "哔哩哔哩点赞（可能会增加推荐关联性）"
-                }
+                config_mapping = self.ql_env_mapping
                 # 遍历获取配置项当前值
                 config_lines = []
                 for env_name, desc in config_mapping.items():
@@ -507,10 +501,9 @@ https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-功能任务�
                 config_info = "暂无配置信息（未查询到青龙面板环境变量）"
         
         help_msg = f"""风险声明：此工具不能保证安全性，所有者可直接查看ck，可直接控制账号！
-（其实我还没有开源这个插件，只要没同类型的BOT目前很安全）
-此工具引用的开源项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目，此项目在面板即可本地登录，只需要一个能长期开机的电脑/NAS即可
+此工具引用的开源项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目
 
-目前为了保证安全性，此账户在登录和登出都需要扫码验证，以防止任何人都可以删除你的ck
+为了保证安全性，此账户在登录和登出都需要扫码验证，以防止任何人都可以删除你的ck
 如果不想扫码登出，可以直接将uid告诉所有者让其删除
 
 当前存储的账号数量：{count}/{self.max_account}
