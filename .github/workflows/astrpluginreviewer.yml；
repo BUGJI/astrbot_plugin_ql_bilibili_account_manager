@@ -1,0 +1,12 @@
+name: AstrPluginReviewer Trigger
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    tags:
+      - plugin-publish
+jobs:
+  trigger-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger AstrPluginReviewer
+        run: echo "触发 AstrPluginReviewer Bot 审核"
