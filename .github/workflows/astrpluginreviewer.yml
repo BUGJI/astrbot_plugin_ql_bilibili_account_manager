@@ -1,15 +1,17 @@
 name: AstrPluginReviewer Trigger
+# 触发条件：PR 创建/更新/重新打开时，不管分支/标签，先触发
 on:
-  # 触发条件：创建/更新 PR 时触发
   pull_request:
     types: [opened, synchronize, reopened]
-    # 可选：仅当 PR 带 plugin-publish 标签时触发（和你之前加的标签匹配）
-    tags:
-      - plugin-publish
+
 jobs:
   trigger-bot:
     runs-on: ubuntu-latest
+    # 只在 PR 带 plugin-publish 标签时才执行后续步骤
+    if: contains(github.event.pull_request.labels.*.name, 'plugin-publish')
     steps:
-      - name: Trigger AstrPluginReviewer
-        run: echo "触发 AstrPluginReviewer Bot 审核"
-        # 若 Bot 有专属触发命令/API，可替换这里的 run 命令（比如调用 Bot 的 WebHook）
+      - name: 触发 AstrPluginReviewer Bot
+        run: |
+          echo "检测到 PR 带 plugin-publish 标签，触发 Bot 审核"
+          # 这里如果有 Bot 专属的触发 API/命令，替换这行即可
+          # 示例：curl -X POST "Bot的触发WebHook地址" -d "pr_number=${{ github.event.pull_request.number }}"
