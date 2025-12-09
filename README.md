@@ -6,7 +6,7 @@
 
 可以每天给登录的bili账号获取最多65经验，每日自动领取大会员权益等，请查看引用项目的BiliTool的[功能任务说明](https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-)的任务范围
 
-此插件需要青龙面板作为前置科技，并且已部署rayWangQvQ/BiliBiliToolPro作为自动化程序，部署需要的项目请查看[部署](#部署)
+此插件需要青龙面板作为前置科技，并且已部署rayWangQvQ/BiliBiliToolPro作为自动化程序，部署需要的项目请查看[部署](#部署) 
 
 
 # 风险声明
