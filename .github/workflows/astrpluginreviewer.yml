@@ -1,0 +1,15 @@
+name: AstrPluginReviewer Trigger
+on:
+  # 触发条件：创建/更新 PR 时触发
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # 可选：仅当 PR 带 plugin-publish 标签时触发（和你之前加的标签匹配）
+    tags:
+      - plugin-publish
+jobs:
+  trigger-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger AstrPluginReviewer
+        run: echo "触发 AstrPluginReviewer Bot 审核"
+        # 若 Bot 有专属触发命令/API，可替换这里的 run 命令（比如调用 Bot 的 WebHook）
