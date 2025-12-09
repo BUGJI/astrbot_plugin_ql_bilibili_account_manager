@@ -13,7 +13,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api import AstrBotConfig
 
-# B站登录相关API
+# 是B站登录相关API
 QRCODE_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 QRCODE_CHECK_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 HOME_PAGE_URL = "https://www.bilibili.com/"
