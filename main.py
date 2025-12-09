@@ -27,6 +27,7 @@ class MyPlugin(Star):
         self.ql_panel_url = self.config.ql_config.get("ql_panel_url", "").rstrip("/")
         self.ql_client_id = self.config.ql_config.get("ql_client_id", "")
         self.ql_client_secret = self.config.ql_config.get("ql_client_secret", "")
+        self.ql_env_mapping = json.loads(self.config.slot_config.get("ql_env_mapping", "{}"))
         self.max_account = int(self.config.slot_config.get("max_account", 10))
         self.test = self.config.slot_config.get("test", False)
         # 会话保持
@@ -430,7 +431,33 @@ class MyPlugin(Star):
     
     @bilitool.command("info", alias={'介绍'})
     async def info(self, event: AstrMessageEvent):
-        info_msg="""此插件可以每天增加最多65经验，可以快速升级lv6
+        """介绍指令（可以查看介绍 使用bilitool info即可）"""
+        
+        token = self.get_qinglong_token()
+        count, _ = self.count_bili_envs(token) if token else (0, [])
+        
+        # 获取青龙面板中的B站任务配置（新增逻辑）
+        config_info = "暂无配置信息（青龙面板连接失败）"
+        if token:
+            all_envs = self.get_all_envs(token)
+            if all_envs:
+                # 定义需要展示的配置项映射
+                config_mapping = self.ql_env_mapping
+                # 遍历获取配置项当前值
+                config_lines = []
+                for env_name, desc in config_mapping.items():
+                    # 查找对应环境变量
+                    env_value = "未配置"
+                    for env in all_envs:
+                        current_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
+                        if current_name == env_name:
+                            env_value = env.get("value", "未配置")
+                            break
+                    config_lines.append(f"• {desc}：{env_value}")
+                config_info = "\n".join(config_lines)
+            else:
+                config_info = "暂无配置信息（未查询到青龙面板环境变量）"
+        info_msg=f"""此插件可以每天增加最多65经验，可以快速升级lv6
 
 目前唯一缺陷是自动看视频会增加一些浏览记录，在天选任务会增加一些关注，不会影响账号其它东西
 （天选关注任务可以关闭掉，具体由机器人所有者填写）
@@ -447,7 +474,7 @@ https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-功能任务�
         
     @bilitool.command("help", alias={'帮助', 'helpme'})
     async def help(self, event: AstrMessageEvent):
-        """帮助指令（新增青龙环境变量配置项展示）"""
+        """帮助指令"""
         # 获取当前账号数量
         token = self.get_qinglong_token()
         count, _ = self.count_bili_envs(token) if token else (0, [])
@@ -575,7 +602,7 @@ BiliTool 帮助：
 
     @bilitool.command("logout", alias={'删除'})
     async def logout(self, event: AstrMessageEvent, uid: int):
-        """登出指令（需要扫码验证）"""
+        """登出指令"""
         qr_temp_path = None
         try:
             # 1. 基础检查
