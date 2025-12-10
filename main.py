@@ -29,6 +29,7 @@ class MyPlugin(Star):
         self.ql_client_secret = self.config.ql_config.get("ql_client_secret", "")
         self.ql_env_mapping = json.loads(self.config.slot_config.get("ql_env_mapping", "{}"))
         self.max_account = int(self.config.slot_config.get("max_account", 10))
+        self.logout_verify = bool(self.config.slot_config.get("logout_verify", True))
         self.test = self.config.slot_config.get("test", False)
         # 会话保持
         self.session = requests.Session()
@@ -550,7 +551,7 @@ BiliTool 帮助：
             
             # 4. 测试模式判断（最后判断）
             if self.test:
-                yield event.plain_result(f"⚠️ 测试模式已开启，当前账号数量：{count}/{self.max_account}，跳过登录流程")
+                yield event.plain_result(f"⚠️ 测试模式开启，跳出二维码登录流程，无法登录")
                 return
             
             # 5. 生成二维码（返回临时文件路径）
@@ -603,34 +604,37 @@ BiliTool 帮助：
                 yield event.plain_result("❌ 青龙面板配置不完整")
                 return
             
-            # 2. 测试模式判断
-            if self.test:
-                yield event.plain_result(f"⚠️ 测试模式已开启，跳过登出验证流程（UID：{uid}）")
-                return
             
-            # 3. 生成验证二维码（临时文件）
-            yield event.plain_result(f"📱 请扫码验证身份以删除UID {uid} 的账号（仅验证身份，无实际登录）")
-            oauth_key, qr_temp_path = self.generate_qrcode()
-            
-            if not oauth_key or not qr_temp_path:
-                yield event.plain_result("❌ 生成验证二维码失败")
-                return
-            
-            # 4. 发送本地二维码文件
-            yield event.image_result(qr_temp_path)
-            yield event.plain_result("✅ 请使用B站APP扫描上方二维码验证身份（2分钟内有效）")
-            
-            # 5. 轮询验证状态
-            cookies = self.check_qrcode_status(oauth_key)
-            if not cookies:
-                yield event.plain_result("❌ 身份验证失败（超时/过期/取消）")
-                return
-            
-            # 6. 验证Cookie中的UID是否匹配
-            cookie_uid = cookies.get("DedeUserID")
-            if str(cookie_uid) != str(uid):
-                yield event.plain_result(f"❌ 身份验证失败：扫码账号UID（{cookie_uid}）与待删除UID（{uid}）不匹配")
-                return
+            if self.logout_verify:
+                # 2. 测试模式判断
+                if self.test:
+                    yield event.plain_result(f"⚠️ 测试模式开启，跳出二维码验证，删除失败")
+                    return
+                # 3. 生成验证二维码（临时文件）
+                yield event.plain_result(f"📱 请扫码验证身份以删除UID {uid} 的账号（仅验证身份，无实际登录）")
+                oauth_key, qr_temp_path = self.generate_qrcode()
+                
+                if not oauth_key or not qr_temp_path:
+                    yield event.plain_result("❌ 生成验证二维码失败")
+                    return
+                
+                # 4. 发送本地二维码文件
+                yield event.image_result(qr_temp_path)
+                yield event.plain_result("✅ 请使用B站APP扫描上方二维码验证身份（2分钟内有效）")
+                
+                # 5. 轮询验证状态
+                cookies = self.check_qrcode_status(oauth_key)
+                if not cookies:
+                    yield event.plain_result("❌ 身份验证失败（超时/过期/取消）")
+                    return
+                
+                # 6. 验证Cookie中的UID是否匹配
+                cookie_uid = cookies.get("DedeUserID")
+                if str(cookie_uid) != str(uid):
+                    yield event.plain_result(f"❌ 身份验证失败：扫码账号UID（{cookie_uid}）与待删除UID（{uid}）不匹配")
+                    return
+            else:
+                yield event.plain_result(f"开始删除UID {uid} 的账号")
             
             # 7. 删除Cookie
             token = self.get_qinglong_token()
