@@ -546,7 +546,6 @@ BiliTool 帮助：
 
 所有者指令：
  删除账户 /bilitool forcelogout <uid>  
- 直接添加ck /bilitool addck <ck> <uid>
 """
         yield event.plain_result(help_msg)
 
