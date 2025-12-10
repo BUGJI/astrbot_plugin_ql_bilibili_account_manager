@@ -1,24 +1,418 @@
-import json  # 新增这行
-import requests
-import qrcode
-import time
-import io
-import os
-import tempfile
-import shutil
-from http.cookies import SimpleCookie
+# main.py
+# 异步模块化合并到单文件版本（主入口保持 main.py）
+# 保留原有变量名与方法签名，全部异步化，使用 httpx + BytesIO，不落盘生成二维码
+# 兼容 AstrBot 插件结构，注册保持不变
+
+import asyncio
+import json
+from io import BytesIO
 from typing import Dict, List, Tuple, Optional
+
+import tempfile
+import httpx
+import qrcode
+
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api import AstrBotConfig
 
-# B站登录相关API
+# 常量
 QRCODE_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 QRCODE_CHECK_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 HOME_PAGE_URL = "https://www.bilibili.com/"
 CHECK_PREFIX = "Ray_BiliBiliCookies__"
 
+# =========================
+# 辅助函数：ql_env_mapping 解析
+# =========================
+def parse_ql_env_mapping(raw_text: str, strict: bool = True) -> Dict[str, str]:
+    """
+    解析 ql_env_mapping 文本（每行：描述;变量名）
+    返回字典：{ "ENV_VAR_NAME": "显示文本" }
+    strict=True 时：遇到非法行会抛出 ValueError 并列出错误行
+    """
+    mapping = {}
+    bad_lines = []
+    lines = raw_text.splitlines()
+    for idx, line in enumerate(lines, start=1):
+        s = line.strip()
+        if not s:
+            continue
+        if ";" not in s:
+            bad_lines.append((idx, line))
+            continue
+        parts = [p.strip() for p in s.split(";", 1)]
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            bad_lines.append((idx, line))
+            continue
+        desc, varname = parts[0], parts[1]
+        mapping[varname] = desc
+    if bad_lines and strict:
+        msgs = [f"Line {ln}: {content!r}" for ln, content in bad_lines]
+        raise ValueError("ql_env_mapping 格式错误，非法行：" + "; ".join(msgs))
+    return mapping
+
+# =========================
+# 二维码生成（同步操作放入线程）
+# =========================
+def _make_qr_bytes_sync(qr_text: str) -> BytesIO:
+    qr = qrcode.QRCode(version=1, box_size=10, border=1)
+    qr.add_data(qr_text)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    bio = BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    return bio
+
+async def generate_qr_bytes(qr_text: str) -> BytesIO:
+    """
+    在线程池中执行同步二维码生成，返回 BytesIO（已 seek(0)）。
+    使用 asyncio.to_thread 避免阻塞事件循环，且不产生嵌套事件循环问题。
+    """
+    return await asyncio.to_thread(_make_qr_bytes_sync, qr_text)
+
+# =========================
+# Cookie 工具
+# =========================
+def parse_cookie_string(cookie_str: str) -> Dict[str, str]:
+    d = {}
+    for part in cookie_str.split(";"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            d[key.strip()] = value.strip()
+    return d
+
+def merge_cookies_from_response(resp_cookies) -> Dict[str, str]:
+    res = {}
+    try:
+        # httpx cookies: resp.cookies is Cookies, can iterate
+        for c in resp_cookies:
+            # c might be cookie tuple or httpx._models.Cookie
+            try:
+                name = getattr(c, "name", None)
+                value = getattr(c, "value", None)
+                if name:
+                    res[name] = value
+                else:
+                    # fallback: item might be (k, v)
+                    if isinstance(c, tuple) and len(c) >= 2:
+                        res[c[0]] = c[1]
+            except Exception:
+                pass
+    except Exception:
+        try:
+            res.update(dict(resp_cookies))
+        except Exception:
+            pass
+    return res
+
+# =========================
+# BiliClient: 与 B站交互（异步 httpx）
+# =========================
+class BiliClient:
+    def __init__(self):
+        self.client = httpx.AsyncClient(
+            timeout=15.0,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://www.bilibili.com/",
+                "Origin": "https://www.bilibili.com",
+                "Accept": "application/json, text/plain, */*",
+            }
+        )
+
+
+    async def generate_qrcode(self) -> Tuple[Optional[str], Optional[BytesIO]]:
+        try:
+            resp = await self.client.get(QRCODE_GENERATE_URL)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.error(f"生成二维码接口返回错误：{data}")
+                return None, None
+            qrcode_url = data["data"]["url"]
+            oauth_key = data["data"]["qrcode_key"]
+            # 生成二维码 BytesIO（内存）
+            img_bytes = await generate_qr_bytes(qrcode_url)
+            return oauth_key, img_bytes
+        except Exception as e:
+            logger.error(f"generate_qrcode 异常：{e}", exc_info=True)
+            return None, None
+
+    async def check_qrcode_status(self, oauth_key: str, timeout_seconds: int = 120) -> Optional[Dict]:
+        """
+        轮询二维码登录状态，使用 asyncio.sleep 避免阻塞。
+        成功时返回合并后的 cookie 字典（包含补全后的 cookie）。
+        """
+        try:
+            elapsed = 0
+            interval = 2
+            while elapsed < timeout_seconds:
+                params = {"qrcode_key": oauth_key}
+                resp = await self.client.get(QRCODE_CHECK_URL, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                # B 站返回结构复杂：优先检查 data.code 字段
+                if data.get("code") != 0:
+                    # 当 top-level code 非 0 时，通常是接口错误或提示
+                    # 特殊处理：某些 code 代表过期
+                    try:
+                        inner_code = data.get("data", {}).get("code")
+                        if inner_code == 86038:
+                            logger.warning("B站二维码已过期")
+                            return None
+                        # 其他情况继续轮询
+                    except Exception:
+                        logger.debug(f"二维码检查返回非预期数据：{data}")
+                else:
+                    status_code = data.get("data", {}).get("code")
+                    if status_code == 0:
+                        # 登录成功，尝试补全 cookie（请求首页）
+                        cookies = {}
+                        try:
+                            # 合并当前客户端已接收到的 cookies
+                            cookies.update({c.name: c.value for c in self.client.cookies.jar})
+                        except Exception:
+                            # 备用
+                            try:
+                                cookies.update(dict(self.client.cookies))
+                            except Exception:
+                                pass
+                        cookies = await self.complement_cookies(cookies)
+                        logger.info("B站二维码登录成功，已提取并补全 Cookies")
+                        return cookies
+                    elif status_code == 86038:
+                        logger.warning("B站二维码已过期（内部code）")
+                        return None
+                    # 86101: 等待扫码; 86090: 已扫描等待确认
+                await asyncio.sleep(interval)
+                elapsed += interval
+            logger.warning("二维码轮询超时")
+            return None
+        except Exception as e:
+            logger.error(f"check_qrcode_status 异常：{e}", exc_info=True)
+            return None
+
+    async def complement_cookies(self, cookies: Dict) -> Dict:
+        """
+        访问 B 站首页以补全服务器在 Set-Cookie 中设置的 cookie。
+        返回合并后的 cookie dict。
+        """
+        try:
+            resp = await self.client.get(HOME_PAGE_URL, cookies=cookies)
+            resp.raise_for_status()
+            new_cookies = merge_cookies_from_response(resp.cookies)
+            cookies.update(new_cookies)
+            logger.debug(f"补全Cookie成功，新增字段：{','.join(new_cookies.keys())}")
+            return cookies
+        except Exception as e:
+            logger.error(f"complement_cookies 异常：{e}", exc_info=True)
+            return cookies
+
+    async def validate_cookie(self, cookies: Dict) -> Tuple[bool, str]:
+        """
+        验证 Cookie 有效性，保持与原函数签名一致。
+        """
+        required_fields = ["DedeUserID", "SESSDATA", "bili_jct"]
+        missing = [f for f in required_fields if f not in cookies]
+        if missing:
+            return False, f"缺少必要Cookie字段：{', '.join(missing)}"
+        if not str(cookies["DedeUserID"]).isdigit():
+            return False, "DedeUserID格式无效（非数字）"
+        if len(cookies["SESSDATA"]) < 20:
+            return False, "SESSDATA格式无效（长度不足20）"
+        if len(cookies["bili_jct"]) != 32:
+            return False, "bili_jct格式无效（长度不为32）"
+        return True, "Cookie验证通过"
+
+    async def close(self):
+        await self.client.aclose()
+
+# =========================
+# QinglongClient: 与青龙面板交互（异步 httpx）
+# =========================
+class QinglongClient:
+    def __init__(self, panel_url: str, client_id: str, client_secret: str):
+        self.ql_panel_url = panel_url.rstrip("/") if panel_url else ""
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.client = httpx.AsyncClient(timeout=15.0)
+
+    async def get_token(self) -> Optional[str]:
+        if not all([self.ql_panel_url, self.client_id, self.client_secret]):
+            logger.error("青龙面板配置不完整：地址/Client ID/Client Secret 缺失")
+            return None
+        url = f"{self.ql_panel_url}/open/auth/token?client_id={self.client_id}&client_secret={self.client_secret}"
+        try:
+            resp = await self.client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") == 200 and data.get("data", {}).get("token"):
+                logger.info("青龙面板访问令牌获取成功")
+                return data["data"]["token"]
+            logger.error(f"获取青龙令牌失败：{data}")
+            return None
+        except Exception as e:
+            logger.error(f"获取青龙令牌异常：{e}", exc_info=True)
+            return None
+
+    async def get_all_envs(self, token: str) -> List[Dict]:
+        url = f"{self.ql_panel_url}/open/envs"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            resp = await self.client.get(url, headers=headers)
+            resp.raise_for_status()
+            text = resp.text
+            data = json.loads(text)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict) and data.get("code") == 200:
+                d = data.get("data", {})
+                if isinstance(d, dict):
+                    return d.get("items", [])
+                if isinstance(d, list):
+                    return d
+            return []
+        except Exception as e:
+            logger.error(f"获取青龙环境变量异常：{e}", exc_info=True)
+            return []
+
+    async def save_cookie_to_qinglong(self, cookies: Dict, uid: int) -> Tuple[bool, str]:
+        token = await self.get_token()
+        if not token:
+            return False, "获取青龙面板令牌失败"
+        try:
+            url = f"{self.ql_panel_url}/open/envs"
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            resp = await self.client.get(url, params={"searchValue": CHECK_PREFIX}, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("code") != 200:
+                return False, f"查询青龙环境变量失败：{data.get('message', '')}"
+            env_list = data.get("data", [])
+            if isinstance(env_list, dict):
+                env_list = env_list.get("items", [])
+
+            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
+            user_id = cookies.get("DedeUserID", str(uid))
+
+            existing_env = None
+            for env in env_list:
+                name = env.get("name", "")
+                if isinstance(name, bytes):
+                    try:
+                        name = name.decode("utf-8", errors="ignore")
+                    except Exception:
+                        name = str(name)
+                remarks = env.get("remarks", "")
+                if name.startswith(CHECK_PREFIX) and remarks == f"bili-{user_id}":
+                    existing_env = env
+                    break
+
+            if existing_env:
+                env_data = {"id": existing_env["id"], "name": existing_env["name"], "value": cookie_str, "remarks": f"bili-{user_id}"}
+                up = await self.client.put(url, json=env_data, headers=headers)
+                up.raise_for_status()
+                result = up.json()
+                if result.get("code") == 200:
+                    logger.info(f"更新B站Cookie成功：{existing_env['name']}")
+                    return True, f"更新Cookie成功！UID：{user_id}"
+                else:
+                    return False, f"更新Cookie失败：{result.get('message')}"
+            else:
+                new_name = f"{CHECK_PREFIX}{len(env_list)}"
+                env_payload = [{"name": new_name, "value": cookie_str, "remarks": f"bili-{user_id}"}]
+                post = await self.client.post(url, json=env_payload, headers=headers)
+                post.raise_for_status()
+                result = post.json()
+                if result.get("code") == 200:
+                    logger.info(f"新增B站Cookie成功：{new_name}")
+                    return True, f"新增Cookie成功！UID：{user_id}"
+                else:
+                    return False, f"新增Cookie失败：{result.get('message')}"
+        except Exception as e:
+            logger.error(f"保存Cookie到青龙异常：{e}", exc_info=True)
+            return False, f"保存Cookie异常：{e}"
+
+    async def delete_bili_cookie(self, token: str, uid: int) -> Tuple[bool, str]:
+        if not token:
+            return False, "青龙令牌获取失败"
+        try:
+            all_envs = await self.get_all_envs(token)
+            bili_envs = []
+            target_env = None
+            for env in all_envs:
+                name = env.get("name", "")
+                if isinstance(name, bytes):
+                    try:
+                        name = name.decode("utf-8", errors="ignore")
+                    except Exception:
+                        name = str(name)
+                remarks = env.get("remarks", "")
+                if name.startswith(CHECK_PREFIX):
+                    bili_envs.append(env)
+                    if remarks == f"bili-{uid}":
+                        target_env = env
+            if not target_env:
+                return False, f"未找到UID为 {uid} 的B站Cookie"
+
+            url = f"{self.ql_panel_url}/open/envs"
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            resp = await self.client.delete(url, json=[target_env["id"]], headers=headers)
+            resp.raise_for_status()
+            result = resp.json()
+            if result.get("code") != 200:
+                return False, f"删除Cookie失败：{result.get('message', '')}"
+
+            # 重新整理命名
+            remaining = [env for env in bili_envs if env["id"] != target_env["id"]]
+
+            def extract_suffix(env):
+                name = str(env.get("name", ""))
+                try:
+                    return int(name.split("__")[-1])
+                except Exception:
+                    return 99999
+
+            remaining.sort(key=extract_suffix)
+
+            fail_list = []
+            for new_idx, env in enumerate(remaining):
+                new_name = f"{CHECK_PREFIX}{new_idx}"
+                old_name = str(env.get("name", ""))
+                if old_name == new_name:
+                    continue
+                update_data = {"id": env["id"], "name": new_name, "value": env.get("value"), "remarks": env.get("remarks")}
+                try:
+                    up_resp = await self.client.put(url, json=update_data, headers=headers)
+                    up_resp.raise_for_status()
+                    up_res = up_resp.json()
+                    if up_res.get("code") != 200:
+                        fail_list.append(f"{old_name} → {new_name}（{up_res.get('message')}）")
+                    else:
+                        logger.info(f"环境变量重命名成功：{old_name} → {new_name}")
+                except Exception as e:
+                    fail_list.append(f"{old_name} → {new_name}（{e}）")
+
+            if fail_list:
+                return True, f"删除成功（UID：{uid}），但部分环境变量重命名失败：{'；'.join(fail_list)}"
+            return True, f"删除成功（UID：{uid}），环境变量已重新整理为连续命名"
+        except Exception as e:
+            logger.error(f"删除/整理异常：{e}", exc_info=True)
+            return False, f"删除/整理异常：{e}"
+
+    async def close(self):
+        await self.client.aclose()
+
+# =========================
+# 插件主类（保持 MyPlugin 名称与方法签名）
+# =========================
 @register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -27,443 +421,61 @@ class MyPlugin(Star):
         self.ql_panel_url = self.config.ql_config.get("ql_panel_url", "").rstrip("/")
         self.ql_client_id = self.config.ql_config.get("ql_client_id", "")
         self.ql_client_secret = self.config.ql_config.get("ql_client_secret", "")
-        self.ql_env_mapping = json.loads(self.config.slot_config.get("ql_env_mapping", "{}"))
+        raw_mapping = self.config.slot_config.get("ql_env_mapping", "")
+        try:
+            # 你选择了严格模式（非法行会报错），这里保持 strict=True
+            self.ql_env_mapping = parse_ql_env_mapping(raw_mapping, strict=True)
+        except ValueError as e:
+            logger.error(f"解析 ql_env_mapping 失败：{e}")
+            self.ql_env_mapping = {}
+
         self.max_account = int(self.config.slot_config.get("max_account", 10))
         self.logout_verify = bool(self.config.slot_config.get("logout_verify", True))
-        self.test = self.config.slot_config.get("test", False)
-        # 会话保持
-        self.session = requests.Session()
-        self.session.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-        }
+        self.test = bool(self.config.slot_config.get("test", False))
+
+        # 业务客户端
+        self.bili = BiliClient()
+        self.ql = QinglongClient(self.ql_panel_url, self.ql_client_id, self.ql_client_secret)
+
         logger.info(f"BiliTool插件初始化完成，配置：青龙地址={self.ql_panel_url}，最大账号数={self.max_account}，测试模式={self.test}")
 
     async def initialize(self):
-        """异步初始化方法"""
-        logger.info("BiliTool插件初始化完成")
-
-    def get_qinglong_token(self) -> Optional[str]:
-        """获取青龙面板访问令牌"""
-        if not all([self.ql_panel_url, self.ql_client_id, self.ql_client_secret]):
-            logger.error("青龙面板配置不完整：地址/Client ID/Client Secret 缺失")
-            return None
-        
-        url = f"{self.ql_panel_url}/open/auth/token?client_id={self.ql_client_id}&client_secret={self.ql_client_secret}"
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            token_data = response.json()
-            
-            if token_data.get("code") == 200 and token_data.get("data", {}).get("token"):
-                logger.info("青龙面板访问令牌获取成功")
-                return token_data["data"]["token"]
-            else:
-                error_msg = token_data.get("message", "未知错误")
-                logger.error(f"获取青龙令牌失败：{error_msg}，响应数据：{token_data}")
-                return None
-                
-        except requests.exceptions.ConnectionError:
-            logger.error(f"获取青龙令牌失败：无法连接到青龙面板地址 {self.ql_panel_url}")
-            return None
-        except requests.exceptions.Timeout:
-            logger.error(f"获取青龙令牌失败：请求超时（{self.ql_panel_url}）")
-            return None
-        except Exception as e:
-            logger.error(f"获取青龙令牌异常：{str(e)}", exc_info=True)
-            return None
-
-    def get_all_envs(self, token: str) -> List[Dict]:
-        """获取青龙面板所有环境变量（兼容分页/列表格式）"""
-        url = f"{self.ql_panel_url}/open/envs"
-        headers = {"Authorization": f"Bearer {token}"}
-        all_envs = []
-
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-            # 强制将响应转为字符串后解析JSON（解决bytes/str混用问题）
-            response_text = response.text.strip()
-            env_data = json.loads(response_text)
-
-            # 兼容青龙不同返回格式
-            if isinstance(env_data, list):
-                all_envs = env_data
-                logger.info(f"青龙环境变量：直接获取到 {len(all_envs)} 个变量")
-            elif isinstance(env_data, dict):
-                if env_data.get("code") == 200:
-                    data = env_data.get("data", {})
-                    if isinstance(data, dict):
-                        all_envs = data.get("items", [])
-                    elif isinstance(data, list):
-                        all_envs = data
-                    logger.info(f"青龙环境变量：分页接口获取到 {len(all_envs)} 个变量")
-                else:
-                    error_msg = env_data.get("message", "未知错误")
-                    logger.error(f"获取青龙环境变量失败：{error_msg}")
-            else:
-                logger.error(f"青龙环境变量返回格式异常：{type(env_data)}")
-                
-        except requests.exceptions.ConnectionError:
-            logger.error(f"获取青龙环境变量失败：无法连接到 {self.ql_panel_url}")
-        except requests.exceptions.Timeout:
-            logger.error(f"获取青龙环境变量失败：请求超时")
-        except json.JSONDecodeError:
-            logger.error(f"青龙环境变量响应解析失败：非JSON格式，响应内容：{response.text[:200]}")
-        except Exception as e:
-            logger.error(f"获取青龙环境变量异常：{str(e)}", exc_info=True)
-
-        return all_envs
-
-    def count_bili_envs(self, token: str) -> Tuple[int, List[Dict]]:
-        """统计B站Cookie环境变量数量（强制刷新）"""
-        if not token:
-            logger.error("统计B站账号失败：未获取到青龙令牌")
-            return 0, []
-        
-        # 强制重新获取环境变量
-        all_envs = self.get_all_envs(token)
-        bili_envs = []
-        for env in all_envs:
-            env_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
-            if env_name.startswith(CHECK_PREFIX):
-                bili_envs.append(env)
-        
-        # 按后缀数字排序（保证顺序正确）
-        def extract_num(name: str) -> int:
-            try:
-                return int(name.split("__")[-1])
-            except (IndexError, ValueError):
-                return 99999
-        
-        bili_envs.sort(key=lambda x: extract_num(str(x["name"])))
-        logger.info(f"当前B站账号数量：{len(bili_envs)}/{self.max_account}")
-        return len(bili_envs), bili_envs
-    
-    def generate_qrcode(self) -> Tuple[Optional[str], Optional[str]]:
-        """生成B站登录二维码（返回oauth_key和临时文件路径）"""
-        try:
-            resp = self.session.get(QRCODE_GENERATE_URL)
-            resp.raise_for_status()
-            data = resp.json()
-            
-            if data["code"] != 0:
-                error_msg = data["message"]
-                logger.error(f"生成B站二维码失败：{error_msg}")
-                return None, None
-            
-            qrcode_url = data["data"]["url"]
-            oauth_key = data["data"]["qrcode_key"]
-            
-            # 生成二维码图片并保存到临时文件
-            qr = qrcode.QRCode(version=1, box_size=10, border=1)
-            qr.add_data(qrcode_url)
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white")
-            
-            # 创建临时文件（自动清理）
-            temp_fd, temp_path = tempfile.mkstemp(suffix='.png', prefix='bili_qr_')
-            os.close(temp_fd)  # 关闭文件描述符
-            img.save(temp_path)
-            
-            logger.info(f"B站登录二维码生成成功，临时文件路径：{temp_path}")
-            return oauth_key, temp_path
-            
-        except Exception as e:
-            logger.error(f"生成二维码异常：{str(e)}", exc_info=True)
-            return None, None
-
-    def check_qrcode_status(self, oauth_key: str) -> Optional[Dict]:
-        """轮询二维码登录状态"""
-        try:
-            for _ in range(60):  # 最多轮询2分钟（60*2秒）
-                params = {"qrcode_key": oauth_key}
-                resp = self.session.get(QRCODE_CHECK_URL, params=params)
-                resp.raise_for_status()
-                data = resp.json()
-                
-                if data["code"] != 0:
-                    error_msg = data["message"]
-                    logger.error(f"检查二维码状态失败：{error_msg}")
-                    return None
-                
-                status_code = data["data"]["code"]
-                if status_code == 0:
-                    logger.info("B站二维码登录成功，开始提取Cookie")
-                    cookies = self.get_unique_cookies(self.session.cookies)
-                    return self.complement_cookies(cookies)
-                elif status_code == 86038:
-                    logger.warning("B站二维码已过期")
-                    return None
-                elif status_code == 86101:
-                    logger.debug("等待用户扫描B站二维码...")
-                elif status_code == 86090:
-                    logger.debug("用户已扫描二维码，等待确认...")
-                
-                time.sleep(2)
-            
-            logger.warning("B站二维码登录超时（2分钟）")
-            return None
-            
-        except Exception as e:
-            logger.error(f"轮询二维码状态异常：{str(e)}", exc_info=True)
-            return None
-
-    def get_unique_cookies(self, cookies) -> Dict:
-        """去重Cookie，保留最新值"""
-        cookie_dict = {}
-        for cookie in cookies:
-            cookie_dict[cookie.name] = cookie.value
-        return cookie_dict
-
-    def complement_cookies(self, cookies: Dict) -> Dict:
-        """访问B站主页补全Cookie"""
-        try:
-            resp = self.session.get(HOME_PAGE_URL, cookies=cookies)
-            if resp.status_code == 200:
-                new_cookies = self.get_unique_cookies(resp.cookies)
-                cookies.update(new_cookies)
-                logger.info("Cookie补全成功，新增字段：{}".format(", ".join(new_cookies.keys())))
-            return cookies
-        except Exception as e:
-            logger.error(f"补全Cookie异常：{str(e)}", exc_info=True)
-            return cookies
-
-    def validate_cookie(self, cookies: Dict) -> Tuple[bool, str]:
-        """验证Cookie有效性"""
-        required_fields = ["DedeUserID", "SESSDATA", "bili_jct"]
-        missing = [f for f in required_fields if f not in cookies]
-        
-        if missing:
-            return False, f"缺少必要Cookie字段：{', '.join(missing)}"
-        
-        if not cookies["DedeUserID"].isdigit():
-            return False, "DedeUserID格式无效（非数字）"
-        
-        if len(cookies["SESSDATA"]) < 20:
-            return False, "SESSDATA格式无效（长度不足20）"
-        
-        if len(cookies["bili_jct"]) != 32:
-            return False, "bili_jct格式无效（长度不为32）"
-        
-        return True, "Cookie验证通过"
-
-    def save_cookie_to_qinglong(self, cookies: Dict, uid: int) -> Tuple[bool, str]:
-        """保存Cookie到青龙面板"""
-        token = self.get_qinglong_token()
-        if not token:
-            return False, "获取青龙面板令牌失败"
-        
-        try:
-            # 查询已有环境变量
-            url = f"{self.ql_panel_url}/open/envs"
-            headers = {"Authorization": f"Bearer {token}"}
-            resp = requests.get(url, params={"searchValue": CHECK_PREFIX}, headers=headers, timeout=10)
-            resp.raise_for_status()
-            # 强制转为字符串解析JSON
-            resp_text = resp.text.strip()
-            data = json.loads(resp_text)
-            
-            if data.get("code") != 200:
-                error_msg = data.get("message", "未知错误")
-                return False, f"查询青龙环境变量失败：{error_msg}"
-            
-            env_list = data.get("data", [])
-            if isinstance(env_list, dict):
-                env_list = env_list.get("items", [])
-            
-            # 构造Cookie字符串
-            cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-            user_id = cookies.get("DedeUserID", str(uid))
-            
-            # 检查是否已有该用户的Cookie（修复startswith类型问题）
-            # 替换原有检查逻辑
-            existing_env = None
-            for env in env_list:
-                # 统一处理字节/字符串类型
-                env_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
-                env_remarks = env.get("remarks", b"").decode('utf-8') if isinstance(env.get("remarks"), bytes) else str(env.get("remarks", ""))
-                
-                if env_name.startswith(CHECK_PREFIX) and env_remarks == f"bili-{user_id}":
-                    existing_env = env
-                    break
-            
-            # 准备环境变量数据
-            env_data = {
-                "name": existing_env["name"] if existing_env else f"{CHECK_PREFIX}{len(env_list)}",
-                "value": cookie_str,
-                "remarks": f"bili-{user_id}"
-            }
-            
-            # 新增/更新环境变量
-            if existing_env:
-                env_data["id"] = existing_env["id"]
-                resp = requests.put(f"{self.ql_panel_url}/open/envs", json=env_data, headers=headers, timeout=10)
-                action = "更新"
-            else:
-                resp = requests.post(f"{self.ql_panel_url}/open/envs", json=[env_data], headers=headers, timeout=10)
-                action = "新增"
-            
-            resp.raise_for_status()
-            # 解析响应（强制字符串处理）
-            result_text = resp.text.strip()
-            result = json.loads(result_text)
-            
-            if result.get("code") == 200:
-                logger.info(f"{action}B站Cookie成功：{env_data['name']} (bili-{user_id})")
-                return True, f"{action}Cookie成功！UID：{user_id}"
-            else:
-                error_msg = result.get("message", "未知错误")
-                return False, f"{action}Cookie失败：{error_msg}"
-                
-        except requests.exceptions.ConnectionError:
-            return False, "无法连接到青龙面板"
-        except requests.exceptions.Timeout:
-            return False, "青龙面板请求超时"
-        except json.JSONDecodeError:
-            return False, f"青龙响应解析失败：非JSON格式"
-        except Exception as e:
-            logger.error(f"保存Cookie到青龙异常：{str(e)}", exc_info=True)
-            return False, f"保存Cookie异常：{str(e)}"
-
-    def delete_bili_cookie(self, token: str, uid: int) -> Tuple[bool, str]:
-        """删除指定UID的B站Cookie，并重新整理命名保证连续"""
-        if not token:
-            return False, "青龙令牌获取失败"
-        
-        # 1. 获取所有B站相关环境变量
-        all_envs = self.get_all_envs(token)
-        bili_envs = []
-        target_env = None
-        target_index = -1
-        
-        # 筛选B站Cookie并找到目标UID的环境变量
-        for idx, env in enumerate(all_envs):
-            env_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
-            env_remarks = env.get("remarks", b"").decode('utf-8') if isinstance(env.get("remarks"), bytes) else str(env.get("remarks", ""))
-            
-            if env_name.startswith(CHECK_PREFIX):
-                bili_envs.append(env)
-                # 找到待删除的环境变量
-                if env_remarks == f"bili-{uid}":
-                    target_env = env
-                    target_index = idx
-        
-        if not target_env:
-            return False, f"未找到UID为 {uid} 的B站Cookie"
-        
-        # 2. 删除目标环境变量
-        try:
-            url = f"{self.ql_panel_url}/open/envs"
-            headers = {"Authorization": f"Bearer {token}"}
-            # 执行删除
-            resp = requests.delete(url, json=[target_env["id"]], headers=headers, timeout=10)
-            resp.raise_for_status()
-            
-            delete_result = resp.json()
-            if delete_result.get("code") != 200:
-                error_msg = delete_result.get("message", "未知错误")
-                return False, f"删除Cookie失败：{error_msg}"
-            
-            logger.info(f"成功删除UID {uid} 的Cookie：{target_env['name']}")
-            
-            # 3. 重新整理剩余B站Cookie的命名（保证连续）
-            # 过滤掉已删除的环境变量，重新排序
-            remaining_bili_envs = [env for env in bili_envs if env["id"] != target_env["id"]]
-            
-            # 按原名称后缀数字排序（确保顺序正确）
-            def extract_suffix(env):
-                name = str(env.get("name", ""))
-                try:
-                    return int(name.split("__")[-1])
-                except (IndexError, ValueError):
-                    return 99999
-            
-            remaining_bili_envs.sort(key=extract_suffix)
-            
-            # 4. 批量更新环境变量名称
-            update_fail_list = []
-            for new_suffix, env in enumerate(remaining_bili_envs):
-                new_name = f"{CHECK_PREFIX}{new_suffix}"
-                old_name = str(env.get("name", ""))
-                
-                # 名称已正确无需更新
-                if old_name == new_name:
-                    continue
-                
-                # 构造更新数据
-                update_data = {
-                    "id": env["id"],
-                    "name": new_name,
-                    "value": env["value"],
-                    "remarks": env["remarks"]
-                }
-                
-                # 执行更新
-                try:
-                    update_resp = requests.put(f"{self.ql_panel_url}/open/envs", json=update_data, headers=headers, timeout=10)
-                    update_resp.raise_for_status()
-                    update_result = update_resp.json()
-                    
-                    if update_result.get("code") != 200:
-                        update_fail_list.append(f"{old_name} → {new_name}（{update_result.get('message')}）")
-                    else:
-                        logger.info(f"环境变量重命名成功：{old_name} → {new_name}")
-                except Exception as e:
-                    update_fail_list.append(f"{old_name} → {new_name}（{str(e)}）")
-            
-            # 5. 处理更新失败的情况
-            if update_fail_list:
-                fail_msg = "；".join(update_fail_list)
-                return True, f"删除成功（UID：{uid}），但部分环境变量重命名失败：{fail_msg}"
-            else:
-                return True, f"删除成功（UID：{uid}），环境变量已重新整理为连续命名"
-                
-        except requests.exceptions.ConnectionError:
-            return False, "无法连接到青龙面板"
-        except requests.exceptions.Timeout:
-            return False, "青龙面板请求超时"
-        except Exception as e:
-            logger.error(f"删除Cookie并整理命名异常：{str(e)}", exc_info=True)
-            return False, f"删除/整理异常：{str(e)}"
+        logger.info("BiliTool插件异步初始化完成")
 
     @filter.command_group("bilitool", alias={'哔哩哔哩账号管理'})
     def bilitool(self):
         pass
-    
+
     @bilitool.command("info", alias={'介绍'})
     async def info(self, event: AstrMessageEvent):
-        """介绍指令（可以查看介绍 使用bilitool info即可）"""
-        
-        token = self.get_qinglong_token()
-        count, _ = self.count_bili_envs(token) if token else (0, [])
-        
-        # 获取青龙面板中的B站任务配置（新增逻辑）
+        token = await self.ql.get_token()
+        count, _ = await self.count_bili_envs(token) if token else (0, [])
+
         config_info = "暂无配置信息（青龙面板连接失败）"
         if token:
-            all_envs = self.get_all_envs(token)
+            all_envs = await self.ql.get_all_envs(token)
             if all_envs:
-                # 定义需要展示的配置项映射
-                config_mapping = self.ql_env_mapping
-                # 遍历获取配置项当前值
-                config_lines = []
-                for env_name, desc in config_mapping.items():
-                    # 查找对应环境变量
-                    env_value = "未配置"
+                lines = []
+                for env_name, desc in self.ql_env_mapping.items():
+                    value = "未配置"
                     for env in all_envs:
-                        current_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
+                        current_name = env.get("name", "")
+                        if isinstance(current_name, bytes):
+                            try:
+                                current_name = current_name.decode("utf-8", errors="ignore")
+                            except Exception:
+                                current_name = str(current_name)
                         if current_name == env_name:
-                            env_value = env.get("value", "未配置")
+                            value = env.get("value", "未配置")
                             break
-                    config_lines.append(f"• {desc}：{env_value}")
-                config_info = "\n".join(config_lines)
+                    lines.append(f"• {desc}：{value}")
+                config_info = "\n".join(lines)
             else:
                 config_info = "暂无配置信息（未查询到青龙面板环境变量）"
-        info_msg=f"""此插件可以每天增加最多65经验，可以快速升级lv6
+
+        info_msg = f"""此插件可以每天增加最多65经验，可以快速升级lv6
 
 目前唯一缺陷是自动看视频会增加一些浏览记录或者点赞，不会影响账号其它东西，具体配置由机器人所有者填写
-
-功能任务说明可查看：
-https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-功能任务说明
 
 此工具使用的项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目
 
@@ -471,36 +483,34 @@ https://github.com/RayWangQvQ/BiliBiliToolPro?tab=readme-ov-file#2-功能任务�
 {config_info}
         """
         yield event.plain_result(info_msg)
-        
+
     @bilitool.command("help", alias={'帮助', 'helpme'})
     async def help(self, event: AstrMessageEvent):
-        """帮助指令"""
-        # 获取当前账号数量
-        token = self.get_qinglong_token()
-        count, _ = self.count_bili_envs(token) if token else (0, [])
-        
-        # 获取青龙面板中的B站任务配置（新增逻辑）
+        token = await self.ql.get_token()
+        count, _ = await self.count_bili_envs(token) if token else (0, [])
+
         config_info = "暂无配置信息（青龙面板连接失败）"
         if token:
-            all_envs = self.get_all_envs(token)
+            all_envs = await self.ql.get_all_envs(token)
             if all_envs:
-                # 定义需要展示的配置项映射
-                config_mapping = self.ql_env_mapping
-                # 遍历获取配置项当前值
-                config_lines = []
-                for env_name, desc in config_mapping.items():
-                    # 查找对应环境变量
-                    env_value = "未配置"
+                lines = []
+                for env_name, desc in self.ql_env_mapping.items():
+                    value = "未配置"
                     for env in all_envs:
-                        current_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
+                        current_name = env.get("name", "")
+                        if isinstance(current_name, bytes):
+                            try:
+                                current_name = current_name.decode("utf-8", errors="ignore")
+                            except Exception:
+                                current_name = str(current_name)
                         if current_name == env_name:
-                            env_value = env.get("value", "未配置")
+                            value = env.get("value", "未配置")
                             break
-                    config_lines.append(f"• {desc}：{env_value}")
-                config_info = "\n".join(config_lines)
+                    lines.append(f"• {desc}：{value}")
+                config_info = "\n".join(lines)
             else:
                 config_info = "暂无配置信息（未查询到青龙面板环境变量）"
-        
+
         help_msg = f"""风险声明：此工具不能保证安全性，所有者可直接查看ck，可直接控制账号！
 此工具引用的开源项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目
 
@@ -528,192 +538,173 @@ BiliTool 帮助：
 
     @bilitool.command("login", alias={'登录'})
     async def login(self, event: AstrMessageEvent, uid: int):
-        """登录指令"""
-        qr_temp_path = None  # 临时文件路径，用于最后清理
+        qr_stream: Optional[BytesIO] = None
         try:
-            # 1. 基础检查
             if not all([self.ql_panel_url, self.ql_client_id, self.ql_client_secret]):
                 yield event.plain_result("❌ 青龙面板配置不完整，请检查地址/Client ID/Client Secret")
                 return
-            
-            # 2. 获取青龙令牌
-            token = self.get_qinglong_token()
+
+            token = await self.ql.get_token()
             if not token:
                 yield event.plain_result("❌ 获取青龙面板访问令牌失败，请检查配置或网络")
                 return
-            
-            # 3. 检查账号数量
-            count, _ = self.count_bili_envs(token)
+
+            count, _ = await self.count_bili_envs(token)
             if count >= self.max_account:
                 yield event.plain_result(f"❌ 当前账号数量已达上限：{count}/{self.max_account}，无法添加新账号")
                 return
-            
-            # 4. 测试模式判断（最后判断）
+
             if self.test:
                 yield event.plain_result(f"⚠️ 测试模式开启，跳出二维码登录流程，无法登录")
                 return
-            
-            # 5. 生成二维码（返回临时文件路径）
+
             yield event.plain_result(f"📱 正在为UID {uid} 生成登录二维码，请稍候...")
-            oauth_key, qr_temp_path = self.generate_qrcode()
-            
-            if not oauth_key or not qr_temp_path:
+            oauth_key, qr_stream = await self.bili.generate_qrcode()
+            if not oauth_key or not qr_stream:
                 yield event.plain_result("❌ 生成二维码失败，请重试")
                 return
-            
-            # 6. 发送本地二维码文件
-            yield event.image_result(qr_temp_path)  # 传入本地文件路径
+
+            data = qr_stream.getvalue()
+
+            # 写入临时文件
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+
+            # 用文件路径发送图片
+            yield event.image_result(tmp_path)
+
             yield event.plain_result(f"✅ 请使用B站APP扫描上方二维码登录（2分钟内有效）")
-            
-            # 7. 轮询登录状态
-            cookies = self.check_qrcode_status(oauth_key)
+
+            cookies = await self.bili.check_qrcode_status(oauth_key)
             if not cookies:
                 yield event.plain_result("❌ 二维码登录失败（超时/过期/取消）")
                 return
-            
-            # 8. 验证Cookie
-            valid, msg = self.validate_cookie(cookies)
+
+            valid, msg = await self.bili.validate_cookie(cookies)
             if not valid:
                 yield event.plain_result(f"❌ Cookie验证失败：{msg}")
                 return
-            
-            # 9. 保存到青龙
-            success, msg = self.save_cookie_to_qinglong(cookies, uid)
+
+            success, msg = await self.ql.save_cookie_to_qinglong(cookies, uid)
             if success:
-                new_count, _ = self.count_bili_envs(token)
+                new_count, _ = await self.count_bili_envs(token)
                 yield event.plain_result(f"✅ {msg}")
             else:
                 yield event.plain_result(f"❌ 保存Cookie失败：{msg}")
         finally:
-            # 清理临时文件
-            if qr_temp_path and os.path.exists(qr_temp_path):
+            if qr_stream:
                 try:
-                    os.remove(qr_temp_path)
-                    logger.info(f"临时二维码文件已清理：{qr_temp_path}")
-                except Exception as e:
-                    logger.warning(f"清理临时二维码文件失败：{str(e)}")
+                    qr_stream.close()
+                except Exception:
+                    pass
 
     @bilitool.command("logout", alias={'删除'})
     async def logout(self, event: AstrMessageEvent, uid: int):
-        """登出指令"""
-        qr_temp_path = None
+        qr_stream: Optional[BytesIO] = None
         try:
-            # 1. 基础检查
             if not all([self.ql_panel_url, self.ql_client_id, self.ql_client_secret]):
                 yield event.plain_result("❌ 青龙面板配置不完整")
                 return
-            
-            
+
             if self.logout_verify:
-                # 2. 测试模式判断
                 if self.test:
                     yield event.plain_result(f"⚠️ 测试模式开启，跳出二维码验证，删除失败")
                     return
-                # 3. 生成验证二维码（临时文件）
+
                 yield event.plain_result(f"📱 请扫码验证身份以删除UID {uid} 的账号（仅验证身份，无实际登录）")
-                oauth_key, qr_temp_path = self.generate_qrcode()
-                
-                if not oauth_key or not qr_temp_path:
+                oauth_key, qr_stream = await self.bili.generate_qrcode()
+                if not oauth_key or not qr_stream:
                     yield event.plain_result("❌ 生成验证二维码失败")
                     return
-                
-                # 4. 发送本地二维码文件
-                yield event.image_result(qr_temp_path)
+
+                data = qr_stream.getvalue()
+                # 写入临时文件
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                    tmp.write(data)
+                    tmp_path = tmp.name
+
+                # 用文件路径发送图片
+                yield event.image_result(tmp_path)
+
                 yield event.plain_result("✅ 请使用B站APP扫描上方二维码验证身份（2分钟内有效）")
-                
-                # 5. 轮询验证状态
-                cookies = self.check_qrcode_status(oauth_key)
+
+                cookies = await self.bili.check_qrcode_status(oauth_key)
                 if not cookies:
                     yield event.plain_result("❌ 身份验证失败（超时/过期/取消）")
                     return
-                
-                # 6. 验证Cookie中的UID是否匹配
+
                 cookie_uid = cookies.get("DedeUserID")
                 if str(cookie_uid) != str(uid):
                     yield event.plain_result(f"❌ 身份验证失败：扫码账号UID（{cookie_uid}）与待删除UID（{uid}）不匹配")
                     return
             else:
                 yield event.plain_result(f"开始删除UID {uid} 的账号")
-            
-            # 7. 删除Cookie
-            token = self.get_qinglong_token()
-            success, msg = self.delete_bili_cookie(token, uid)
-            
+
+            token = await self.ql.get_token()
+            success, msg = await self.ql.delete_bili_cookie(token, uid)
             if success:
-                new_count, _ = self.count_bili_envs(token) if token else (0, [])
+                new_count, _ = await self.count_bili_envs(token) if token else (0, [])
                 yield event.plain_result(f"✅ {msg}")
             else:
                 yield event.plain_result(f"❌ {msg}")
         finally:
-            # 清理临时文件
-            if qr_temp_path and os.path.exists(qr_temp_path):
+            if qr_stream:
                 try:
-                    os.remove(qr_temp_path)
-                    logger.info(f"临时二维码文件已清理：{qr_temp_path}")
-                except Exception as e:
-                    logger.warning(f"清理临时二维码文件失败：{str(e)}")
+                    qr_stream.close()
+                except Exception:
+                    pass
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @bilitool.command("forcelogout", alias={'由所有者直接删除账户'})
     async def forcelogout(self, event: AstrMessageEvent, uid: int):
-        """强制删除指令（管理员）"""
-        # 1. 基础检查
         if not all([self.ql_panel_url, self.ql_client_id, self.ql_client_secret]):
             yield event.plain_result("❌ 青龙面板配置不完整")
             return
-        
-        # 2. 获取令牌并删除
-        token = self.get_qinglong_token()
-        success, msg = self.delete_bili_cookie(token, uid)
-        
+
+        token = await self.ql.get_token()
+        success, msg = await self.ql.delete_bili_cookie(token, uid)
         if success:
-            new_count, _ = self.count_bili_envs(token) if token else (0, [])
+            new_count, _ = await self.count_bili_envs(token) if token else (0, [])
             yield event.plain_result(f"✅ {msg}\n当前账号数量：{new_count}/{self.max_account}")
         else:
             yield event.plain_result(f"❌ {msg}")
 
-    # @filter.permission_type(filter.PermissionType.ADMIN)
-    # @bilitool.command("addck", alias={'由所有者直接添加ck'})
-    # async def addck(self, event: AstrMessageEvent, ck: str, uid: int):
-    #     """手动添加CK指令（管理员）"""
-    #     # 1. 基础检查
-    #     if not all([self.ql_panel_url, self.ql_client_id, self.ql_client_secret]):
-    #         yield event.plain_result("❌ 青龙面板配置不完整")
-    #         return
-        
-    #     # 2. 解析CK字符串
-    #     cookie_dict = {}
-    #     for item in ck.split(";"):
-    #         item = item.strip()
-    #         if "=" in item:
-    #             key, value = item.split("=", 1)
-    #             cookie_dict[key] = value
-        
-    #     # 3. 验证CK
-    #     valid, msg = self.validate_cookie(cookie_dict)
-    #     if not valid:
-    #         yield event.plain_result(f"❌ CK验证失败：{msg}")
-    #         return
-        
-    #     # 4. 检查账号数量
-    #     token = self.get_qinglong_token()
-    #     if not token:
-    #         yield event.plain_result("❌ 获取青龙令牌失败")
-    #         return
-        
-    #     count, _ = self.count_bili_envs(token)
-    #     if count >= self.max_account:
-    #         yield event.plain_result(f"❌ 账号数量已达上限：{count}/{self.max_account}")
-    #         return
-        
-    #     # 5. 保存到青龙
-    #     success, msg = self.save_cookie_to_qinglong(cookie_dict, uid)
-        if success:
-            new_count, _ = self.count_bili_envs(token)
-            yield event.plain_result(f"✅ {msg}\n当前账号数量：{new_count}/{self.max_account}")
-        else:
-            yield event.plain_result(f"❌ 添加CK失败：{msg}")
+    async def count_bili_envs(self, token: str) -> Tuple[int, List[Dict]]:
+        if not token:
+            logger.error("统计B站账号失败：未获取到青龙令牌")
+            return 0, []
+
+        all_envs = await self.ql.get_all_envs(token)
+        bili_envs = []
+        for env in all_envs:
+            name = env.get("name", "")
+            if isinstance(name, bytes):
+                try:
+                    name = name.decode("utf-8", errors="ignore")
+                except Exception:
+                    name = str(name)
+            if name.startswith(CHECK_PREFIX):
+                bili_envs.append(env)
+
+        def extract_num(name: str) -> int:
+            try:
+                return int(name.split("__")[-1])
+            except Exception:
+                return 99999
+
+        bili_envs.sort(key=lambda x: extract_num(str(x.get("name", ""))))
+        logger.info(f"当前B站账号数量：{len(bili_envs)}/{self.max_account}")
+        return len(bili_envs), bili_envs
 
     async def terminate(self):
-        """插件销毁方法"""
+        # 关闭异步客户端
+        try:
+            await self.bili.close()
+        except Exception:
+            pass
+        try:
+            await self.ql.close()
+        except Exception:
+            pass
         logger.info("BiliTool插件已销毁")
