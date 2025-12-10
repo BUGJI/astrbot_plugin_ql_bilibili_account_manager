@@ -15,7 +15,7 @@
         "description": "Bili账户登出验证（扫码）",
         "type": "bool",
         "hint": "如果开启则会在用户登出时验证二维码",
-        "default": false
+        "default": true
       },
       "ql_env_mapping": {
         "description": "青龙环境变量映射",

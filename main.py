@@ -673,42 +673,42 @@ BiliTool 帮助：
         else:
             yield event.plain_result(f"❌ {msg}")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @bilitool.command("addck", alias={'由所有者直接添加ck'})
-    async def addck(self, event: AstrMessageEvent, ck: str, uid: int):
-        """手动添加CK指令（管理员）"""
-        # 1. 基础检查
-        if not all([self.ql_panel_url, self.ql_client_id, self.ql_client_secret]):
-            yield event.plain_result("❌ 青龙面板配置不完整")
-            return
+    # @filter.permission_type(filter.PermissionType.ADMIN)
+    # @bilitool.command("addck", alias={'由所有者直接添加ck'})
+    # async def addck(self, event: AstrMessageEvent, ck: str, uid: int):
+    #     """手动添加CK指令（管理员）"""
+    #     # 1. 基础检查
+    #     if not all([self.ql_panel_url, self.ql_client_id, self.ql_client_secret]):
+    #         yield event.plain_result("❌ 青龙面板配置不完整")
+    #         return
         
-        # 2. 解析CK字符串
-        cookie_dict = {}
-        for item in ck.split(";"):
-            item = item.strip()
-            if "=" in item:
-                key, value = item.split("=", 1)
-                cookie_dict[key] = value
+    #     # 2. 解析CK字符串
+    #     cookie_dict = {}
+    #     for item in ck.split(";"):
+    #         item = item.strip()
+    #         if "=" in item:
+    #             key, value = item.split("=", 1)
+    #             cookie_dict[key] = value
         
-        # 3. 验证CK
-        valid, msg = self.validate_cookie(cookie_dict)
-        if not valid:
-            yield event.plain_result(f"❌ CK验证失败：{msg}")
-            return
+    #     # 3. 验证CK
+    #     valid, msg = self.validate_cookie(cookie_dict)
+    #     if not valid:
+    #         yield event.plain_result(f"❌ CK验证失败：{msg}")
+    #         return
         
-        # 4. 检查账号数量
-        token = self.get_qinglong_token()
-        if not token:
-            yield event.plain_result("❌ 获取青龙令牌失败")
-            return
+    #     # 4. 检查账号数量
+    #     token = self.get_qinglong_token()
+    #     if not token:
+    #         yield event.plain_result("❌ 获取青龙令牌失败")
+    #         return
         
-        count, _ = self.count_bili_envs(token)
-        if count >= self.max_account:
-            yield event.plain_result(f"❌ 账号数量已达上限：{count}/{self.max_account}")
-            return
+    #     count, _ = self.count_bili_envs(token)
+    #     if count >= self.max_account:
+    #         yield event.plain_result(f"❌ 账号数量已达上限：{count}/{self.max_account}")
+    #         return
         
-        # 5. 保存到青龙
-        success, msg = self.save_cookie_to_qinglong(cookie_dict, uid)
+    #     # 5. 保存到青龙
+    #     success, msg = self.save_cookie_to_qinglong(cookie_dict, uid)
         if success:
             new_count, _ = self.count_bili_envs(token)
             yield event.plain_result(f"✅ {msg}\n当前账号数量：{new_count}/{self.max_account}")
