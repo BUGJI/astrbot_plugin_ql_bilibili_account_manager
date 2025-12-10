@@ -1,6 +1,6 @@
 name: astrbot_plugin_ql_bilibili_account_manager # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
 display_name: Bili每日签到（基于青龙） # 用于展示的名字，可以是方便人类阅读的名字（需要版本 >= v4.5.0，低版本不会报错，请放心填写）
-desc: 将账号扫码登录到青龙的Bili任务执行器\n需要青龙面板且安装BiliToolPro，不会配置可以看仓库
+desc: 将账号扫码登录到青龙的Bili任务执行器，需要青龙面板且安装BiliToolPro，不会配置可以看仓库
 version: v0.1.14514 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: BUGJI # 作者
 repo: https://github.com/BUGJI/astrbot_plugin_ql_bilibili_account_manager # 插件的仓库地址
