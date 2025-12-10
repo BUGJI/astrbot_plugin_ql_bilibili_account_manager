@@ -363,8 +363,17 @@ class QinglongClient:
                 return False, f"未找到UID为 {uid} 的B站Cookie"
 
             url = f"{self.ql_panel_url}/open/envs"
+            payload = [uid]  # 青龙官方示例是列表
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            resp = await self.client.delete(url, json=[target_env["id"]], headers=headers)
+            request = self.client.build_request(
+                "DELETE",
+                url,
+                content=json.dumps(payload),
+                headers=headers
+            )
+
+            # 发送请求
+            resp = await self.client.send(request)
             resp.raise_for_status()
             result = resp.json()
             if result.get("code") != 200:
@@ -401,8 +410,8 @@ class QinglongClient:
                     fail_list.append(f"{old_name} → {new_name}（{e}）")
 
             if fail_list:
-                return True, f"删除成功（UID：{uid}），但部分环境变量重命名失败：{'；'.join(fail_list)}"
-            return True, f"删除成功（UID：{uid}），环境变量已重新整理为连续命名"
+                return True, f"删除成功（UID：{uid}），环境变量重命名失败：{'；'.join(fail_list)}\n请将此反馈给管理者"
+            return True, f"删除成功（UID：{uid}）"
         except Exception as e:
             logger.error(f"删除/整理异常：{e}", exc_info=True)
             return False, f"删除/整理异常：{e}"
