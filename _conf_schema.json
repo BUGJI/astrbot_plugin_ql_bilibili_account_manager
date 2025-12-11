@@ -26,7 +26,7 @@
       "test": {
         "description": "测试模式(不生成二维码)",
         "type": "bool",
-        "hint": "开启后不会生成二维码，方便调试",
+        "hint": "开启后不会生成二维码，方便测试其它功能项是否配置好",
         "default": false,
         "invisible": false
       }
