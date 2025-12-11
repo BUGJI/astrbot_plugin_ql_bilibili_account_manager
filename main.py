@@ -1,7 +1,5 @@
-# main.py
-# 异步模块化合并到单文件版本（主入口保持 main.py）
-# 保留原有变量名与方法签名，全部异步化，使用 httpx + BytesIO，不落盘生成二维码
-# 兼容 AstrBot 插件结构，注册保持不变
+# 力竭了 
+# 留给后人赤石这一块
 
 import asyncio
 import json
@@ -432,7 +430,7 @@ class QinglongClient:
 # =========================
 # 插件主类（保持 MyPlugin 名称与方法签名）
 # =========================
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
+@register("astrbot_plugin_ql_bilibili_account_manager", "BUGJI", "将账号扫码登录到青龙的Bili任务执行器，需要青龙面板且安装BiliToolPro，不会配置可以看仓库", "v0.1.14514")
 class MyPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
