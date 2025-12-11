@@ -8,6 +8,7 @@ import json
 from io import BytesIO
 from typing import Dict, List, Tuple, Optional
 
+import os
 import tempfile
 import httpx
 import qrcode
@@ -604,6 +605,8 @@ BiliTool 帮助：
             yield event.image_result(tmp_path)
 
             yield event.plain_result(f"✅ 请使用B站APP扫描上方二维码登录（2分钟内有效）")
+            
+            os.remove(tmp_path)
 
             cookies = await self.bili.check_qrcode_status(oauth_key)
             if not cookies:
@@ -657,7 +660,9 @@ BiliTool 帮助：
                 yield event.image_result(tmp_path)
 
                 yield event.plain_result("✅ 请使用B站APP扫描上方二维码验证身份（2分钟内有效）")
-
+                
+                os.remove(tmp_path)
+                
                 cookies = await self.bili.check_qrcode_status(oauth_key)
                 if not cookies:
                     yield event.plain_result("❌ 身份验证失败（超时/过期/取消）")
