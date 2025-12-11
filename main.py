@@ -419,6 +419,10 @@ class QinglongClient:
 
                 return True, f"删除成功（UID：{uid}）"
 
+                # 操你妈的AI，压根不考虑别人项目兼容性，不搞数组末尾交换删除又嫌我调用50次挪动问题太大
+                # 别人的项目必须保证变量名连续，cookie丢哪个槽位都能跑，你来一句有抖动或者俩人操作怎么办，那我问你你有这种API吗，那你有办法吗
+                # 这玩意设计寿命就他妈供10个人用，登录一次半辈子都不用管，插件就是扩展面板已有的登录，卸了这玩意都能跑，信我登录一次能遇到这个BUG还是信硬盘内存条涨价
+
         except httpx.ConnectError:
             return False, "无法连接到青龙面板"
         except httpx.TimeoutException:
@@ -592,6 +596,12 @@ BiliTool 帮助：
             # 用文件路径发送图片
             yield event.image_result(tmp_path)
             os.remove(tmp_path) # 放进finally直接炸了，这个插件的设计寿命达不到使用量要求
+            
+            # 说缓存的那个我问你，放到下面会发生什么，你知道吗
+            # cannot access local variable 'tmp_path' where it is not associated with a value
+            # 知道为什么吗，是你让我改在这的，你去修理，然后让我这个兼顾测试和这坨代码的多睡会，第二天如果我看见你给这玩意塞到全局变量你就等着我往仓库里拉屎吧
+            # DO: 给每个BOT平台适配CCB代码
+            
             yield event.plain_result(f"✅ 请使用B站APP扫描上方二维码登录（2分钟内有效）")
 
             cookies = await self.bili.check_qrcode_status(oauth_key)
