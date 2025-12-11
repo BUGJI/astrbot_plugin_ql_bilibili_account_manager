@@ -531,14 +531,12 @@ class MyPlugin(Star):
         help_msg = f"""风险声明：此工具不能保证安全性，所有者可直接查看ck，可直接控制账号！
 此工具引用的开源项目为rayWangQvQ/BiliBiliToolPro，您可以直接在本地/青龙部署此项目
 
-为了保证安全性，此账户在登录和登出都需要扫码验证，以防止任何人都可以删除你的ck
-如果不想扫码登出，可以直接将uid告诉所有者让其删除
-
 当前存储的账号数量：{count}/{self.max_account}
 {config_info}
 
-注意：尖括号内的值<var>等只需要填写数字
-例如 /bilitool login 1057790493
+注意：尖括号内的值<uid>只需要替换为数字即可
+例如 /bilitool login <uid>
+可以填写为 /bilitool login 1057790493
 
 BiliTool 帮助：
 
@@ -546,7 +544,6 @@ BiliTool 帮助：
  登录Bili账号 /bilitool login <uid> 
  - 登录会申请一个登录二维码，扫码后请在手机端确认登录，如果提示地点请选择在自己设备登录
  登出Bili账号 /bilitool logout <uid> 
- - 登出会申请一个登录二维码，此次请求仅验证您的身份，如果需要直接删除请联系所有者
 
 所有者指令：
  删除账户 /bilitool forcelogout <uid>  
