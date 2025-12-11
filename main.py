@@ -249,6 +249,8 @@ class QinglongClient:
         if not all([self.ql_panel_url, self.client_id, self.client_secret]):
             logger.error("青龙面板配置不完整：地址/Client ID/Client Secret 缺失")
             return None
+        
+        # 这里没有体面的方法了，只能拼接URL参数
         url = f"{self.ql_panel_url}/open/auth/token?client_id={self.client_id}&client_secret={self.client_secret}"
         try:
             resp = await self.client.get(url)
@@ -342,103 +344,90 @@ class QinglongClient:
             return False, f"保存Cookie异常：{e}"
 
     async def delete_bili_cookie(self, token: str, uid: int) -> Tuple[bool, str]:
-        """异步删除指定UID的B站Cookie，并重新整理命名保证连续"""
+        """使用尾部覆盖方式安全删除指定UID的B站Cookie"""
         if not token:
             return False, "青龙令牌获取失败"
+
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                # 1. 获取所有B站相关环境变量
+
+                # 1. 获取全部 Cookie 环境变量
                 url = f"{self.ql_panel_url}/open/envs"
                 resp = await client.get(url, headers={"Authorization": f"Bearer {token}"}, params={"searchValue": CHECK_PREFIX})
                 resp.raise_for_status()
                 all_envs = resp.json().get("data", [])
 
-                bili_envs = []
+                # 排序，确保 bili_cookie__0 1 2 ... 顺序一致
+                def extract_suffix(env):
+                    try:
+                        return int(str(env["name"]).split("__")[-1])
+                    except:
+                        return 99999
+
+                bili_envs = sorted(
+                    [env for env in all_envs if str(env.get("name", "")).startswith(CHECK_PREFIX)],
+                    key=extract_suffix
+                )
+
+                # 找到目标 cookie
                 target_env = None
-
-                # 筛选B站Cookie并找到目标UID的环境变量
-                for env in all_envs:
-                    env_name = env.get("name", b"").decode('utf-8') if isinstance(env.get("name"), bytes) else str(env.get("name", ""))
-                    env_remarks = env.get("remarks", b"").decode('utf-8') if isinstance(env.get("remarks"), bytes) else str(env.get("remarks", ""))
-
-                    if env_name.startswith(CHECK_PREFIX):
-                        bili_envs.append(env)
-                        if env_remarks == f"bili-{uid}":
-                            target_env = env
+                for env in bili_envs:
+                    if str(env.get("remarks", "")) == f"bili-{uid}":
+                        target_env = env
+                        break
 
                 if not target_env:
-                    return False, f"未找到UID为 {uid} 的B站Cookie"
+                    return False, f"未找到UID {uid} 的Cookie"
 
-                # 2. 删除目标环境变量
+                # 如果只有 1 条，直接删即可
+                if len(bili_envs) == 1:
+                    delete_resp = await client.request(
+                        "DELETE",
+                        f"{self.ql_panel_url}/open/envs?id=",
+                        json=[target_env["id"]],
+                        headers={"Authorization": f"Bearer {token}"}
+                    )
+                    delete_resp.raise_for_status()
+                    return True, f"删除成功（UID：{uid}）"
+
+                # 2. 获取最后一条
+                last_env = bili_envs[-1]
+
+                # 3. 如果要删除的不是最后一个 → 则用最后一个覆盖它
+                if target_env["id"] != last_env["id"]:
+                    update_data = {
+                        "id": target_env["id"],
+                        "name": target_env["name"],  # 名称保持不变！
+                        "value": last_env["value"],
+                        "remarks": last_env["remarks"]
+                    }
+
+                    put_resp = await client.put(
+                        f"{self.ql_panel_url}/open/envs",
+                        json=update_data,
+                        headers={"Authorization": f"Bearer {token}"}
+                    )
+                    put_resp.raise_for_status()
+
+                # 4. 删除最后一条
                 delete_resp = await client.request(
                     "DELETE",
                     f"{self.ql_panel_url}/open/envs?id=",
-                    json=[target_env["id"]],
+                    json=[last_env["id"]],
                     headers={"Authorization": f"Bearer {token}"}
                 )
                 delete_resp.raise_for_status()
-                delete_result = delete_resp.json()
-                if delete_result.get("code") != 200:
-                    return False, f"删除Cookie失败：{delete_result.get('message', '未知错误')}"
 
-                logger.info(f"成功删除UID {uid} 的Cookie：{target_env['name']}")
-
-                # 3. 重新整理剩余B站Cookie的命名（保证连续）
-                remaining_bili_envs = [env for env in bili_envs if env["id"] != target_env["id"]]
-
-                def extract_suffix(env):
-                    name = str(env.get("name", ""))
-                    try:
-                        return int(name.split("__")[-1])
-                    except (IndexError, ValueError):
-                        return 99999
-
-                remaining_bili_envs.sort(key=extract_suffix)
-
-                # 4. 批量更新环境变量名称
-                update_fail_list = []
-                for new_suffix, env in enumerate(remaining_bili_envs):
-                    new_name = f"{CHECK_PREFIX}{new_suffix}"
-                    old_name = str(env.get("name", ""))
-                    if old_name == new_name:
-                        continue
-
-                    update_data = {
-                        "id": env["id"],
-                        "name": new_name,
-                        "value": env["value"],
-                        "remarks": env["remarks"]
-                    }
-
-                    try:
-                        update_resp = await client.put(f"{self.ql_panel_url}/api/envs/envs", json=update_data,
-                                                    headers={"Authorization": f"Bearer {token}"})
-                        update_resp.raise_for_status()
-                        update_result = update_resp.json()
-                        if update_result.get("code") != 200:
-                            update_fail_list.append(f"{old_name} → {new_name}（{update_result.get('message')}）")
-                        else:
-                            logger.info(f"环境变量重命名成功：{old_name} → {new_name}")
-                    except Exception as e:
-                        update_fail_list.append(f"{old_name} → {new_name}（{str(e)}）")
-
-                if update_fail_list:
-                    fail_msg = "；".join(update_fail_list)
-                    return True, f"删除成功（UID：{uid}），但部分环境变量重命名失败：{fail_msg}"
-                else:
-                    return True, f"删除成功（UID：{uid}），环境变量已重新整理为连续命名"
+                return True, f"删除成功（UID：{uid}）"
 
         except httpx.ConnectError:
             return False, "无法连接到青龙面板"
         except httpx.TimeoutException:
             return False, "青龙面板请求超时"
         except Exception as e:
-            logger.error(f"删除Cookie并整理命名异常：{str(e)}", exc_info=True)
-            return False, f"删除/整理异常：{str(e)}"
+            logger.error(f"删除Cookie异常：{str(e)}", exc_info=True)
+            return False, f"删除Cookie异常：{str(e)}"
 
-
-    async def close(self):
-        await self.client.aclose()
 
 # =========================
 # 插件主类（保持 MyPlugin 名称与方法签名）
@@ -618,6 +607,11 @@ BiliTool 帮助：
                 yield event.plain_result(f"❌ Cookie验证失败：{msg}")
                 return
 
+            cookie_uid = cookies.get("DedeUserID")
+            if str(cookie_uid) != str(uid):
+                yield event.plain_result(f"❌ 身份验证失败：扫码账号UID（{cookie_uid}）与待删除UID（{uid}）不匹配")
+                return
+            
             success, msg = await self.ql.save_cookie_to_qinglong(cookies, uid)
             if success:
                 new_count, _ = await self.count_bili_envs(token)
