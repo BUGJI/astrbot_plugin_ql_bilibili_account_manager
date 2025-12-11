@@ -726,9 +726,11 @@ BiliTool 帮助：
         try:
             await self.bili.close()
         except Exception:
+            logger.error(f"哔哩登录模块未正常关闭")
             pass
         try:
             await self.ql.close()
         except Exception:
+            logger.error(f"青龙模块未正常关闭")
             pass
         logger.info("BiliTool插件已销毁")
