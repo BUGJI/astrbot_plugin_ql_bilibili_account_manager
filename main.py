@@ -231,7 +231,7 @@ class BiliClient:
         return True, "Cookie验证通过"
 
     async def close(self):
-        await self.client.aclose()
+        await self.client.close()
 
 # =========================
 # QinglongClient: 与青龙面板交互（异步 httpx）
@@ -425,7 +425,9 @@ class QinglongClient:
         except Exception as e:
             logger.error(f"删除Cookie异常：{str(e)}", exc_info=True)
             return False, f"删除Cookie异常：{str(e)}"
-
+    
+    async def close(self):
+        await self.client.close()
 
 # =========================
 # 插件主类（保持 MyPlugin 名称与方法签名）
@@ -588,10 +590,7 @@ BiliTool 帮助：
 
             # 用文件路径发送图片
             yield event.image_result(tmp_path)
-
             yield event.plain_result(f"✅ 请使用B站APP扫描上方二维码登录（2分钟内有效）")
-            
-            os.remove(tmp_path)
 
             cookies = await self.bili.check_qrcode_status(oauth_key)
             if not cookies:
@@ -615,6 +614,7 @@ BiliTool 帮助：
             else:
                 yield event.plain_result(f"❌ 保存Cookie失败：{msg}")
         finally:
+            os.remove(tmp_path)
             if qr_stream:
                 try:
                     qr_stream.close()
@@ -651,8 +651,6 @@ BiliTool 帮助：
 
                 yield event.plain_result("✅ 请使用B站APP扫描上方二维码验证身份（2分钟内有效）")
                 
-                os.remove(tmp_path)
-                
                 cookies = await self.bili.check_qrcode_status(oauth_key)
                 if not cookies:
                     yield event.plain_result("❌ 身份验证失败（超时/过期/取消）")
@@ -673,6 +671,7 @@ BiliTool 帮助：
             else:
                 yield event.plain_result(f"❌ {msg}")
         finally:
+            os.remove(tmp_path)
             if qr_stream:
                 try:
                     qr_stream.close()
