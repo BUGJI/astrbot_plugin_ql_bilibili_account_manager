@@ -21,7 +21,7 @@
         "description": "青龙环境变量映射",
         "type": "text",
         "hint": "主要用于展示设置的环境变量，这些会在菜单中显示",
-        "default": "{\"Ray_DailyTaskConfig__NumberOfProtectedCoins\": \"哔哩哔哩最少保留的硬币数量\",\"DailyTaskConfig__SaveCoinsWhenLv6\": \"哔哩哔哩在lv6之后不对视频投币\",\"DailyTaskConfig__IsShareVideo\": \"哔哩哔哩分享视频（不实际分享给任何人）\",\"DailyTaskConfig__SelectLike\": \"哔哩哔哩点赞（可能会增加推荐关联性）\"}"
+        "default": "最少保留的硬币数量;Ray_DailyTaskConfig__NumberOfProtectedCoins\n在lv6之后不白嫖硬币（不给视频投币）;DailyTaskConfig__SaveCoinsWhenLv6\n分享视频（不实际分享给任何人）;DailyTaskConfig__IsShareVideo\n点赞视频（可能会增加推荐关联性）;DailyTaskConfig__SelectLike\n优先投币支持的UP主（-1为关闭）;Ray_DailyTaskConfig__SupportUpIds"
       },
       "test": {
         "description": "测试模式(不生成二维码)",
