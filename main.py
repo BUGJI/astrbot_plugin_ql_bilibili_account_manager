@@ -573,6 +573,7 @@ BiliTool 帮助：
                 yield event.plain_result(f"❌ 当前账号数量已达上限：{count}/{self.max_account}，无法添加新账号")
                 return
 
+            # 放在此处主要是可以验证上方的配置和流程是否正确
             if self.test:
                 yield event.plain_result(f"⚠️ 测试模式开启，跳出二维码登录流程，无法登录")
                 return
