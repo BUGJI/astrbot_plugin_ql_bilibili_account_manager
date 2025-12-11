@@ -40,6 +40,7 @@
 | DailyTaskConfig__IsShareVideo|哔哩哔哩分享视频（不实际分享给任何人 可+5经验）|分享多了可能会风控，建议为false
 | DailyTaskConfig__SelectLike|哔哩哔哩点赞（可能会增加推荐关联性）|建议为false
 | Ray_DailyTaskConfig__SupportUpIds|优先投币支持的UP主UID（可能会增加推荐关联性 -1关闭）|建议为-1，可以使用英文逗号分隔多个UID
+
 在bilitool info和help会展示青龙环境变量映射配置，增加变量映射配置 注解;变量名 一行一个
 
 这些环境变量添加后会在菜单展示，以便用户更好知道操作了账号的什么东东，如果不想展示这些请接着往下看
