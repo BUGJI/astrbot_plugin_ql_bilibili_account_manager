@@ -37,21 +37,21 @@
 | ----  | ---- | ---- |
 | Ray_DailyTaskConfig__NumberOfProtectedCoins|哔哩哔哩最少保留的硬币数量|建议为10
 | DailyTaskConfig__SaveCoinsWhenLv6|哔哩哔哩在lv6之后每日白嫖硬币|可以设置为true
-| DailyTaskConfig__IsShareVideo|哔哩哔哩分享视频（+5经验 不实际分享给任何人）|分享多了可能会风控，建议为false
+| DailyTaskConfig__IsShareVideo|哔哩哔哩分享视频（不实际分享给任何人 可+5经验）|分享多了可能会风控，建议为false
 | DailyTaskConfig__SelectLike|哔哩哔哩点赞（可能会增加推荐关联性）|建议为false
+| Ray_DailyTaskConfig__SupportUpIds|优先投币支持的UP主UID（可能会增加推荐关联性 -1关闭）|建议为-1，可以使用英文逗号分隔多个UID
+在bilitool info和help会展示青龙环境变量映射配置，增加变量映射配置 注解;变量名 一行一个
 
 这些环境变量添加后会在菜单展示，以便用户更好知道操作了账号的什么东东，如果不想展示这些请接着往下看
 
 3.安装此插件，然后在插件配置中，配置你的 面板IP 以及上方的 Cilent ID 和 Cilent Secret
 
 | 配置 | 介绍 | 建议 |
-| ---- | ---- | ---- |
+| ----- | ---- | ---- |
 | 测试模式 | 仅用于控制是否生成二维码登录 | 开启后可以测试环境 |
 | 登出扫码验证 | 用于防止登录的账户被他人删除的情况 | 可信环境可关闭 |
 | 最大登录的账户个数 | 太大可能导致自己家宽风控 | 建议不变/更低值 |
 | 青龙环境变量映射 | 展示已经配置的环境值 | 建议按上面的添加面板配置，增加配置按照格式即可 |
-
-> 在bilitool info和help会展示青龙环境变量映射配置，增加变量映射配置 注解;变量名 一行一个
 
 # 使用
 
