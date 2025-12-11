@@ -347,6 +347,7 @@ class QinglongClient:
             return False, "青龙令牌获取失败"
 
         try:
+            # 复用客户端会导致神秘崩溃，请图灵辟邪之前请不要动这坨代码
             async with httpx.AsyncClient(timeout=10) as client:
 
                 # 1. 获取全部 Cookie 环境变量
@@ -590,6 +591,7 @@ BiliTool 帮助：
 
             # 用文件路径发送图片
             yield event.image_result(tmp_path)
+            os.remove(tmp_path) # 放进finally直接炸了，这个插件的设计寿命达不到使用量要求
             yield event.plain_result(f"✅ 请使用B站APP扫描上方二维码登录（2分钟内有效）")
 
             cookies = await self.bili.check_qrcode_status(oauth_key)
@@ -614,7 +616,6 @@ BiliTool 帮助：
             else:
                 yield event.plain_result(f"❌ 保存Cookie失败：{msg}")
         finally:
-            os.remove(tmp_path)
             if qr_stream:
                 try:
                     qr_stream.close()
@@ -648,7 +649,7 @@ BiliTool 帮助：
 
                 # 用文件路径发送图片
                 yield event.image_result(tmp_path)
-
+                os.remove(tmp_path) # 放进finally直接炸了，这个插件的设计寿命达不到使用量要求
                 yield event.plain_result("✅ 请使用B站APP扫描上方二维码验证身份（2分钟内有效）")
                 
                 cookies = await self.bili.check_qrcode_status(oauth_key)
@@ -671,7 +672,6 @@ BiliTool 帮助：
             else:
                 yield event.plain_result(f"❌ {msg}")
         finally:
-            os.remove(tmp_path)
             if qr_stream:
                 try:
                     qr_stream.close()
