@@ -602,7 +602,7 @@ BiliTool 帮助：
 
             # 用文件路径发送图片
             yield event.image_result(tmp_path)
-            os.remove(tmp_path) # 放进finally直接炸了，这个插件的设计寿命达不到使用量要求
+            if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
             
             # 说缓存的那个我问你，放到下面会发生什么，你知道吗
             # cannot access local variable 'tmp_path' where it is not associated with a value
@@ -638,11 +638,6 @@ BiliTool 帮助：
                 except Exception:
                     pass
 
-            if os.remove(tmp_path):
-                logger.info("已成功移除缓存文件")
-            else:
-                pass # 你有办法吗
-
     @bilitool.command("logout", alias={'删除'})
     async def logout(self, event: AstrMessageEvent, uid: int):
         qr_stream: Optional[BytesIO] = None
@@ -670,7 +665,7 @@ BiliTool 帮助：
 
                 # 用文件路径发送图片
                 yield event.image_result(tmp_path)
-                os.remove(tmp_path) # 放进finally直接炸了，这个插件的设计寿命达不到使用量要求
+                if tmp_path and os.path.exists(tmp_path): os.remove(tmp_path)
                 yield event.plain_result("✅ 请使用B站APP扫描上方二维码验证身份（2分钟内有效）")
                 
                 cookies = await self.bili.check_qrcode_status(oauth_key)
